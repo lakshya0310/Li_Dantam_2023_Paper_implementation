@@ -1,33 +1,58 @@
-#include "PyBulletSDF.hpp"
-#include "CoxeterTriangulation.hpp"
-#include "Manifold.hpp"
-#include "ElasticUpdate.hpp"
-#include "Graph.hpp"
-#include "AStar.hpp"
-#include "CSVWriter.hpp"
-#include <cmath>
+#include "prm.hpp"
+#include "sdcl.hpp"
+#include "coxeter_triangulation.hpp"
+#include "facet_checker.hpp"
+#include "elastic_update.hpp"
+#include "visualization.hpp"
+#include <thread>
+#include <iostream>
+#include <filesystem>
+#include <pybind11/embed.h>
+namespace py = pybind11;
+std::filesystem::create_directories("data");
 
-int main(){
-    PyBulletSDF sdf("python3 pybullet/sdf_server.py");
+int main() {
+    py::scoped_interpreter guard{};
 
-    CoxeterTriangulation ctr(-M_PI,M_PI,0.25);
+    py::module sys = py::module::import("sys");
+    sys.attr("path").attr("append")("simulations");
+    RobotInterface* robot = new RobotInterface();
 
-    Manifold m;
-    m.extract(ctr,sdf);
+    PRM prm;
+    SDCL sdcl(robot);
 
-    std::vector<std::vector<double>> pts;
-    for(auto&e:m.edges){
-        auto p=ctr.vertices[e.a];
-        for(int i=0;i<10;i++) p=elasticUpdate(p,sdf);
-        pts.push_back(p);
-    }
+    std::thread sdcl_thread([&]() {
+        while (true) {
+            sdcl.update(prm);
+        }
+    });
 
-    auto graph=buildGraph(pts);
-    int s=0, g=pts.size()-1;
-    auto idx=astar(graph,pts,s,g);
+    std::thread proof_thread([&]() {
+        CoxeterTriangulation ct(robot->dof(), 0.1);
+        ct.setManifoldFunction(
+            [&](const std::vector<double>& q) {
+                return robot->sdf(q);
+            });
 
-    std::vector<std::vector<double>> path;
-    for(int i:idx) path.push_back(pts[i]);
+        while (true) {
+            ct.setSeeds(sdcl.getManifoldSeeds());
+            ct.traceManifold();
+            ct.constructTriangulation();
 
-    writeCSV("data/path.csv",path);
+            ElasticUpdater updater(nullptr);
+            FacetChecker checker(robot, &updater);
+
+            for (const auto& f : ct.facets()) {
+                if (!checker.checkFacet(f))
+                    break;
+            }
+
+            std::cout << "Infeasibility proof found\n";
+            break;
+        }
+    });
+
+    sdcl_thread.join();
+    proof_thread.join();
+    return 0;
 }
