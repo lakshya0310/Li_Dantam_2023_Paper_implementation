@@ -1,0 +1,6 @@
+__pycache__/
+.vscode/
+build/
+external/
+new/
+infeasibility_proof.cpython-310-x86_64-linux-gnu.so

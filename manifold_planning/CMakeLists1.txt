@@ -1,0 +1,48 @@
+cmake_minimum_required(VERSION 3.16)
+project(infeasibility_planner LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ---------------------
+# Core packages
+# ---------------------
+find_package(OpenMP REQUIRED)
+find_package(pybind11 REQUIRED)
+
+# NLopt - system install (libnlopt-dev)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NLOPT REQUIRED nlopt)
+
+# ---------------------
+# Vendored dependencies
+# ---------------------
+set(GUDHI_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/external/gudhi/src)
+set(THUNDERSVM_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/external/thundersvm/include)
+set(THUNDERSVM_LIB ${CMAKE_SOURCE_DIR}/external/thundersvm/build/libthundersvm.so)
+
+# Sanity checks (so CMake fails with clear error)
+if (NOT EXISTS ${THUNDERSVM_LIB})
+  message(FATAL_ERROR "ThunderSVM library not found at: ${THUNDERSVM_LIB}. Build it in external/thundersvm/build.")
+endif()
+
+include_directories(
+  include
+  ${GUDHI_INCLUDE_DIR}
+  ${THUNDERSVM_INCLUDE_DIR}
+  ${NLOPT_INCLUDE_DIRS}
+)
+
+link_directories(${NLOPT_LIBRARY_DIRS})
+
+file(GLOB SRC_FILES src/*.cpp)
+
+add_executable(infeasibility_planner ${SRC_FILES})
+
+target_link_libraries(infeasibility_planner
+  pybind11::embed
+  ${THUNDERSVM_LIB}
+  ${NLOPT_LIBRARIES}
+  OpenMP::OpenMP_CXX
+)
+

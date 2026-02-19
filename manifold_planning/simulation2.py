@@ -7,7 +7,8 @@ import pandas as pan
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'c_space'))
-import c_space as csg
+def collision(q):
+    return sdf(q) <= 0.0
 
 def writesdf(filename, theta1s, theta2s, sdfs):
     with open(filename, 'w', newline="") as f:
