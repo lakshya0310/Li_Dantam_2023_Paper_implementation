@@ -2,9 +2,10 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <queue>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <omp.h> // Include OpenMP for parallelization
 #include <gudhi/Coxeter_triangulation.h>
 
 using PR = Gudhi::coxeter_triangulation::Permutahedral_representation<
@@ -39,8 +40,13 @@ bool intersect_check(
     const Eigen::VectorXd& p2,
     const std::function<double(const Eigen::VectorXd&)>& f
 ) {
-    double f1 = f(p1);
-    double f2 = f(p2);
+    double f1, f2;
+    // Protect ThunderSVM inference from concurrent thread clashes
+    #pragma omp critical(svm_predict)
+    {
+        f1 = f(p1);
+        f2 = f(p2);
+    }
     return (f1 == 0.0) || (f2 == 0.0) || (f1 * f2 < 0.0);
 }
 
@@ -53,8 +59,13 @@ Eigen::VectorXd intersect(
 ) {
     Eigen::VectorXd p1 = v1;
     Eigen::VectorXd p2 = v2;
-    double f1 = f(p1);
-    double f2 = f(p2);
+    
+    double f1, f2;
+    #pragma omp critical(svm_predict)
+    {
+        f1 = f(p1);
+        f2 = f(p2);
+    }
 
     if (f1 * f2 > 0.0) return 0.5 * (p1 + p2);
     if (std::abs(f1) <= eps) return p1;
@@ -63,7 +74,11 @@ Eigen::VectorXd intersect(
     Eigen::VectorXd p = (p1 * f2 - p2 * f1) / (f2 - f1);
 
     for (int i = 0; i < max_iter; ++i) {
-        double fp = f(p);
+        double fp;
+        #pragma omp critical(svm_predict)
+        {
+            fp = f(p);
+        }
         if (std::abs(fp) <= eps) return p;
         
         if (fp * f1 > 0.0) {
@@ -87,70 +102,121 @@ std::vector<Facet> generate_manifold_triangulation(
     double scale
 ) {
     CT ct(dimension); 
-    std::queue<PR> q;
+    
+    // Use Level-Synchronous BFS for Parallelization
+    std::vector<PR> current_level;
     std::unordered_set<PR, PRHash, PREq> visited_edges;
     std::unordered_map<PR, Eigen::VectorXd, PRHash, PREq> Ps; 
 
-    // WRAPPER: Map Lattice space (y) to World space (x)
-    // x = scale * y
     auto f_scaled = [&](const Eigen::VectorXd& y) {
         return f(y * scale);
     };
 
-    // 1. Initialization with ALL seeds (converted to lattice space)
+    // 1. Initialization
     for (const auto& s : seeds) {
         Eigen::VectorXd s_lattice = s / scale; 
         auto simplex = ct.locate_point(s_lattice);
         for (auto edge : simplex.face_range(1)) {
             if (visited_edges.insert(edge).second) {
-                q.push(edge);
+                current_level.push_back(edge);
             }
         }
     }
 
-    // 2. Manifold Tracing (Algorithm 1) in Lattice Space
-    while (!q.empty()) {
-        PR ls = q.front();
-        q.pop();
+    // 2. Parallel Manifold Tracing (Algorithm 1)
+    while (!current_level.empty()) {
+        std::vector<PR> next_level;
 
-        for (auto c : ls.coface_range(2)) {
-            for (auto l : c.face_range(1)) {
-                Eigen::VectorXd p1_lat, p2_lat;
-                int cnt = 0;
-                for (auto v : l.vertex_range()) {
-                    if (cnt == 0) p1_lat = ct.cartesian_coordinates(v);
-                    else if (cnt == 1) p2_lat = ct.cartesian_coordinates(v);
-                    cnt++;
-                }
+        // Parallelize exploring neighbors of the current BFS level
+        #pragma omp parallel
+        {
+            std::vector<PR> local_next;
+            
+            #pragma omp for schedule(dynamic)
+            for (size_t i = 0; i < current_level.size(); ++i) {
+                PR ls = current_level[i];
 
-                if (intersect_check(p1_lat, p2_lat, f_scaled)) {
-                    if (Ps.find(l) == Ps.end()) {
-                        // Calculate intersection in LATTICE space
-                        Eigen::VectorXd ip_lat = intersect(p1_lat, p2_lat, f_scaled);
-                        // Store intersection in WORLD space
-                        Ps.emplace(l, ip_lat * scale);
-                    }
-                    if (visited_edges.insert(l).second) {
-                        q.push(l);
+                for (auto c : ls.coface_range(2)) {
+                    for (auto l : c.face_range(1)) {
+                        
+                        bool is_visited;
+                        #pragma omp critical(visit_check)
+                        {
+                            is_visited = (visited_edges.find(l) != visited_edges.end());
+                        }
+                        if (is_visited) continue;
+
+                        Eigen::VectorXd p1_lat, p2_lat;
+                        int cnt = 0;
+                        for (auto v : l.vertex_range()) {
+                            if (cnt == 0) p1_lat = ct.cartesian_coordinates(v);
+                            else if (cnt == 1) p2_lat = ct.cartesian_coordinates(v);
+                            cnt++;
+                        }
+
+                        if (intersect_check(p1_lat, p2_lat, f_scaled)) {
+                            bool is_new = false;
+                            
+                            #pragma omp critical(visit_check)
+                            {
+                                if (visited_edges.insert(l).second) {
+                                    is_new = true;
+                                }
+                            }
+
+                            if (is_new) {
+                                Eigen::VectorXd ip_lat = intersect(p1_lat, p2_lat, f_scaled);
+                                
+                                #pragma omp critical(ps_insert)
+                                {
+                                    Ps.emplace(l, ip_lat * scale);
+                                }
+                                local_next.push_back(l);
+                            }
+                        }
                     }
                 }
             }
+            
+            // Merge local queue into global next level
+            #pragma omp critical(merge_queues)
+            {
+                next_level.insert(next_level.end(), local_next.begin(), local_next.end());
+            }
         }
+        current_level = next_level;
     }
 
-    // 3. Construct Triangulation (Algorithm 3)
+    // 3. Parallel Construct Triangulation (Algorithm 3)
     std::unordered_map<PR, std::vector<Eigen::VectorXd>, PRHash, PREq> M;
-    for (const auto& kv : Ps) {
-        const PR& edge = kv.first;
-        const Eigen::VectorXd& ip_world = kv.second;
-        for (auto c : edge.coface_range(dimension)) {
-            M[c].push_back(ip_world);
+    std::vector<std::pair<PR, Eigen::VectorXd>> ps_vec(Ps.begin(), Ps.end());
+
+    #pragma omp parallel
+    {
+        std::unordered_map<PR, std::vector<Eigen::VectorXd>, PRHash, PREq> local_M;
+        
+        #pragma omp for schedule(static)
+        for (size_t i = 0; i < ps_vec.size(); ++i) {
+            const PR& edge = ps_vec[i].first;
+            const Eigen::VectorXd& ip_world = ps_vec[i].second;
+            for (auto c : edge.coface_range(dimension)) {
+                local_M[c].push_back(ip_world);
+            }
+        }
+
+        #pragma omp critical(m_merge)
+        {
+            for (const auto& kv : local_M) {
+                for (const auto& p : kv.second) {
+                    M[kv.first].push_back(p);
+                }
+            }
         }
     }
 
+    // Convert to Facets
     std::vector<Facet> facets;
     for (const auto& kv : M) {
-        // Only keep full facets (dimension vertices for codimension-1)
         if (kv.second.size() >= (size_t)dimension) {
             facets.push_back(kv.second);
         }
