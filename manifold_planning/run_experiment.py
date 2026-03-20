@@ -9,7 +9,7 @@ import time
 import collections
 
 # CHANGE THIS to simulation3, simulation4, or simulation5
-import simulation4 as sim_env 
+import infeasible_sim3dof as sim_env 
 
 try:
     import infeasibility_proof
@@ -240,12 +240,12 @@ def run():
     # We need bounds accessible for the 2D visualization
     bounds = [(-3.14, 3.14)] * dof 
     
-    while scale > 0.05:
+    while scale > 0.00:
         facets = planner.construct_proof(seeds, scale)
         print(f"   [Info] Generated {len(facets)} facets at scale {scale:.3f}.")
         
         if len(facets) == 0:
-            scale *= 0.8
+            scale -= 0.1
             continue
             
         # FIX 1: Always store the latest facets so we can visualize the failed attempts
@@ -274,7 +274,7 @@ def run():
         else:
             print(f"   [Timer] Verification: {time.time()-t_check:.4f} s (Failed)")
             print(f"   Elastic Updates failed at scale {scale:.3f}. Reducing global scale...")
-            scale *= 0.8
+            scale -= 0.1
 
     print("\n[Step 6] Visualizing Results...")
     if dof == 2:

@@ -187,7 +187,7 @@ class Simulation1:
     
     def get_start_config(self):
         # A configuration in the bottom-left free region
-        return [-2.5, 2.5]
+        return [-2.5, -2.5]
 
     def get_goal_config(self):
         # A configuration in the top-right free region
