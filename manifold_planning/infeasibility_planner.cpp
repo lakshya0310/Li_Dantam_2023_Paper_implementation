@@ -23,6 +23,7 @@ public:
     void add_sample(const Eigen::VectorXd& q, float label) {
         samples_.push_back(q);
         labels_.push_back(label);
+        std::cout << "Everything here is fine\n";
     }
 
     void train_manifold() {

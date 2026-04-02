@@ -7,9 +7,10 @@ from scipy.optimize import minimize
 import miniball
 import time
 import collections
+import pybullet as p
 
 # CHANGE THIS to simulation3, simulation4, or simulation5
-import infeasible_sim3dof as sim_env 
+import simulation6 as sim_env 
 
 try:
     import infeasibility_proof
@@ -19,7 +20,7 @@ except ImportError:
 
 def build_prm(sim, num_samples, start, goal):
     dof = sim.dof()
-    bounds = [(-3.14, 3.14)] * dof
+    bounds = [(-1.8326, 1.8326), (-2.7489, 2.7489), (-3, 3), (-0.06, 0.1), (0, 0)]
     
     valid_samples = [start, goal]
     
@@ -27,6 +28,7 @@ def build_prm(sim, num_samples, start, goal):
         q = np.random.uniform([b[0] for b in bounds], [b[1] for b in bounds])
         if not sim.inCollision(q):
             valid_samples.append(q)
+    print(f"Number of samples generated {len(valid_samples)}")
             
     valid_samples = np.array(valid_samples)
     
@@ -162,6 +164,39 @@ def check_proof_in_python(facets, sim, planner, training_samples, training_label
     print(f"   [Check] Bisections: {bisections} | Elastic Fixes: {elastic_fixes}")
     return True
 
+def playback_path(sim_env_module, path, dt=0.05):
+    import pybullet as p
+    import time
+    import numpy as np
+
+    # IMPORTANT: Disconnect any existing DIRECT simulation
+    if p.isConnected():
+        p.disconnect()
+
+    # Start GUI simulation
+    sim = sim_env_module.Simulation1(use_gui=True)
+    robot_id = sim.robotId
+    dof = sim.dof()
+
+    print("[Playback] Starting simulation playback...")
+
+    # Smooth interpolation between waypoints
+    for i in range(len(path) - 1):
+        q1 = np.array(path[i])
+        q2 = np.array(path[i+1])
+
+        for t in np.linspace(0, 1, 25):
+            q = (1 - t) * q1 + t * q2
+            for j in range(dof):
+                p.resetJointState(robot_id, j, float(q[j]))
+            p.stepSimulation()
+            time.sleep(dt)
+
+    print("[Playback] Finished. Close the GUI window to exit.")
+    while p.isConnected():
+        p.stepSimulation()
+        time.sleep(0.01)
+
 def run():
     print("------------------------------------------------")
     print("       N-DOF Infeasibility Proof Experiment")
@@ -176,7 +211,7 @@ def run():
     start_q = np.array(sim.get_start_config())
     goal_q = np.array(sim.get_goal_config())
     
-    num_samples = 500 * dof 
+    num_samples = 1000 * dof 
     
     print(f"\n[Step 1] Building PRM with {num_samples} samples...")
     t0 = time.time()
@@ -184,25 +219,35 @@ def run():
     print(f"   [Timer] PRM Build: {time.time()-t0:.4f} s")
     
     if nx.has_path(G, s_idx, g_idx):
-        print("Path FOUND! Problem is feasible. No proof needed.")
+        print("Path FOUND! Playing simulation...")
+
+        path_nodes = nx.shortest_path(G, s_idx, g_idx)
+        path = [samples[i] for i in path_nodes]
+
+        # Close planner simulation before GUI
+        import pybullet as p
+        if p.isConnected():
+            p.disconnect()
+
+        playback_path(sim_env, path)
         return
 
     print("\n[Step 2] Analyzing Connected Components...")
     t0 = time.time()
     comp_start = nx.node_connected_component(G, s_idx)
     comp_goal = nx.node_connected_component(G, g_idx)
+    print(len(comp_start), len(comp_goal))
     
-    # Store explicit python lists for Elastic Update local retraining
     training_samples = []
     training_labels = []
     
     for idx in comp_start:
-        planner.add_sample(samples[idx], -1.0)
+        planner.add_sample(samples[idx][:-1], -1.0)
         training_samples.append(samples[idx])
         training_labels.append(-1.0)
         
     for idx in comp_goal:
-        planner.add_sample(samples[idx], 1.0)
+        planner.add_sample(samples[idx][:-1], 1.0)
         training_samples.append(samples[idx])
         training_labels.append(1.0)
         
@@ -233,7 +278,7 @@ def run():
     print(f"   [Timer] Seed Search: {time.time()-t0:.4f} s (Gap: {min_dist:.3f})")
     
     print("\n[Step 5] Adaptive Proof Construction...")
-    scale = 0.5 
+    scale = 0.1 
     valid_proof = False
     final_facets = []
     
@@ -274,7 +319,7 @@ def run():
         else:
             print(f"   [Timer] Verification: {time.time()-t_check:.4f} s (Failed)")
             print(f"   Elastic Updates failed at scale {scale:.3f}. Reducing global scale...")
-            scale -= 0.1
+            scale *= 0.9
 
     print("\n[Step 6] Visualizing Results...")
     if dof == 2:

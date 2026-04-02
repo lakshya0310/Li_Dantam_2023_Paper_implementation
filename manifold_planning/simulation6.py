@@ -2,7 +2,7 @@ import os
 import numpy as np
 import pybullet as p
 import pybullet_data
-
+import json
 
 # --------------------------
 # Helper: compute min distance
@@ -81,40 +81,21 @@ class Simulation1:
             raise FileNotFoundError(f"table.urdf not found at: {table_path}")
 
         self.planeId = p.loadURDF(plane_path)
-        self.tableId = p.loadURDF(table_path)
 
         # ---- Load your robot URDF from simulations folder ----
-        urdf_path = os.path.join(self.THIS_DIR, "5DOFRoboticArm.urdf")
+        urdf_path = os.path.join(self.THIS_DIR, "SCARA_like_1.urdf")
         if not os.path.exists(urdf_path):
             raise FileNotFoundError(f"Robot URDF not found at: {urdf_path}")
 
         self.robotId = p.loadURDF(
             urdf_path,
-            [-0.4, 0, self.table_height - 0.05],
+            # [-0.4, 0, self.table_height - 0.05],
+            [0, 0, self.table_height - 0.1],
             useFixedBase=True
         )
 
         # ---- Obstacles ----
         color = [0.824, 0.824, 0.824, 1.0]
-
-        # Shelf parts
-        shelf_base_extent = [0.3, 0.4, 0.025]
-        shelf_base_pos = [0.3, 0, self.table_height]
-
-        shelf_mid_extent = [0.3, 0.4, 0.025]
-        shelf_mid_pos = [0.3, 0, 1.15]
-
-        shelf_top_extent = [0.3, 0.4, 0.025]
-        shelf_top_pos = [0.3, 0, 1.65]
-
-        shelf_left_extent = [0.3, 0.025, 0.5]
-        shelf_left_pos = [0.3, 0.4, 1.15]
-
-        shelf_right_extent = [0.3, 0.025, 0.5]
-        shelf_right_pos = [0.3, -0.4, 1.15]
-
-        shelf_back_extent = [0.025, 0.4, 0.5]
-        shelf_back_pos = [0.6, 0, 1.15]
 
         collision_shapes = []
         visual_shapes = []
@@ -127,14 +108,27 @@ class Simulation1:
             visual_shapes.append(vis)
             shape_positions.append(pos)
 
-        add_box(shelf_base_extent, shelf_base_pos, color)
-        add_box(shelf_mid_extent, shelf_mid_pos, color)
-        add_box(shelf_top_extent, shelf_top_pos, color)
-        add_box(shelf_left_extent, shelf_left_pos, color)
-        add_box(shelf_right_extent, shelf_right_pos, color)
-        add_box(shelf_back_extent, shelf_back_pos, color)
+        box_left_side_extent = np.array([0.05, 0.4, 0.4])
+        box_left_side_pos = [-0.5, -0.3, 0.7]
+        add_box(box_left_side_extent / 2, box_left_side_pos, color)
 
-        self.shelf_id = p.createMultiBody(
+        box_right_side_extent = np.array([0.05, 0.4, 0.4])
+        box_right_side_pos = [-0.9, -0.3, 0.7]
+        add_box(box_right_side_extent / 2, box_right_side_pos, color)
+
+        box_upper_left_side_extent = np.array([0.125, 0.4, 0.05])
+        box_upper_left_side_pos = [-0.85, -0.3, 0.9]
+        add_box(box_upper_left_side_extent / 2, box_upper_left_side_pos, color)
+
+        box_upper_right_side_extent = np.array([0.125, 0.4, 0.05])
+        box_upper_right_side_pos = [-0.55, -0.3, 0.9]
+        add_box(box_upper_right_side_extent / 2, box_upper_right_side_pos, color)
+
+        box_back_side_extent = np.array([0.4, 0.05, 0.4])
+        box_back_side_pos = [-0.7, -0.5, 0.7]
+        add_box(box_back_side_extent / 2, box_back_side_pos, color)
+
+        self.box_id = p.createMultiBody(
             baseMass=0,
             baseCollisionShapeIndex=-1,
             baseVisualShapeIndex=-1,
@@ -150,61 +144,71 @@ class Simulation1:
             linkJointAxis=[[0, 0, 0]] * len(collision_shapes)
         )
 
-        # ---- Cubes ----
-        cube_extent = [0.075, 0.075, 0.075]
-        cube_col = p.createCollisionShape(p.GEOM_BOX, halfExtents=cube_extent)
-        cube_vis = p.createVisualShape(p.GEOM_BOX, halfExtents=cube_extent, rgbaColor=[1, 0, 0, 1])
+        collision_shapes = []
+        visual_shapes = []
+        shape_positions = []
 
-        cube_positions = [
-            [0.10527608126362643, -0.1684955869015416,
-             self.table_height + shelf_mid_pos[2] - shelf_base_pos[2] + shelf_mid_extent[2] + cube_extent[2]],
-            [0.21496869176397293, 0.25240283875081576,
-             self.table_height + shelf_mid_pos[2] - shelf_base_pos[2] + shelf_mid_extent[2] + cube_extent[2]],
-        ]
-        cube_yaws = [-1.5560652770151433, -0.34789205201574536]
+        table_leg_1_extent = np.array([0.1, 0.1, 0.5])
+        table_leg_1_pos = [1.2, 0.65, 0.25]
+        add_box(table_leg_1_extent / 2, table_leg_1_pos, color)
 
-        self.cube_ids = []
-        for i in range(len(cube_positions)):
-            quat = p.getQuaternionFromEuler([0, 0, cube_yaws[i]])
-            cid = p.createMultiBody(
-                baseMass=0,
-                baseCollisionShapeIndex=cube_col,
-                baseVisualShapeIndex=cube_vis,
-                basePosition=cube_positions[i],
-                baseOrientation=quat
-            )
-            self.cube_ids.append(cid)
+        table_leg_2_extent = np.array([0.1, 0.1, 0.5])
+        table_leg_2_pos = [-1.2, 0.65, 0.25]
+        add_box(table_leg_2_extent / 2, table_leg_2_pos, color)
 
-        # All obstacles
-        self.all_obstacles = [self.shelf_id] + self.cube_ids
+        table_leg_3_extent = np.array([0.1, 0.1, 0.5])
+        table_leg_3_pos = [1.2, -0.65, 0.25]
+        add_box(table_leg_3_extent / 2, table_leg_3_pos, color)
+
+        table_leg_4_extent = np.array([0.1, 0.1, 0.5])
+        table_leg_4_pos = [-1.2, -0.65, 0.25]
+        add_box(table_leg_4_extent / 2, table_leg_4_pos, color)
+
+        table_top_extent = np.array([2.5, 1.4, 0.1])
+        table_top_pos = [0.0, 0.0, 0.5]
+        add_box(table_top_extent / 2, table_top_pos, color)
+
+        self.table_id = p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=-1,
+            baseVisualShapeIndex=-1,
+            linkMasses=[0] * len(collision_shapes),
+            linkCollisionShapeIndices=collision_shapes,
+            linkVisualShapeIndices=visual_shapes,
+            linkPositions=shape_positions,
+            linkOrientations=[[0, 0, 0, 1]] * len(collision_shapes),
+            linkInertialFramePositions=[[0, 0, 0]] * len(collision_shapes),
+            linkInertialFrameOrientations=[[0, 0, 0, 1]] * len(collision_shapes),
+            linkParentIndices=[0] * len(collision_shapes),
+            linkJointTypes=[p.JOINT_FIXED] * len(collision_shapes),
+            linkJointAxis=[[0, 0, 0]] * len(collision_shapes)
+        )
+
+        ball_col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.2)
+        ball_vis = p.createVisualShape(p.GEOM_SPHERE, radius=0.2, rgbaColor=[1,0,0,1])
+        self.ball_id = p.createMultiBody(
+            baseMass=0,
+            baseCollisionShapeIndex=ball_col,
+            baseVisualShapeIndex=ball_vis,
+            basePosition=[-0.7, 0.1, 0.75]
+        )
 
         # DOF
         self.N = p.getNumJoints(self.robotId)
 
+        self.all_obstacles = [self.box_id, self.ball_id]
+        # self.all_obstacles = [self.box_id, self.table_id, self.ball_id]
         # Optional: step a few frames to settle
         for _ in range(10):
             p.stepSimulation()
-
-    def run(self):
-        if self.use_gui:
-            print("Running simulation with GUI. Close the window to exit.")
-            while p.isConnected():
-                p.stepSimulation()
-        else:
-            print("Running headless simulation. Press Ctrl+C to exit.")
-            try:
-                while True:
-                    p.stepSimulation()
-            except KeyboardInterrupt:
-                pass
     
     def get_start_config(self):
         # A configuration in the bottom-left free region
-        return [-2.5, -2.5 , 0.0 , 0.0 , 0.0]
+        return [0.0, 0.0 , 0.0 , 0.0 , 0.0]
 
     def get_goal_config(self):
         # A configuration in the top-right free region
-        return [0, 1.5 , 0.0 , 0.0 , 0.0]
+        return [1.8, -0.95, 0, -0.05, 0.0]
 
     # degrees of freedom
     def dof(self) -> int:
@@ -229,6 +233,31 @@ class Simulation1:
 
         dist = get_min_dist(self.robotId, self.all_obstacles)
         return float(dist)
+    
+    def run(self):
+        if self.use_gui:
+
+            config = self.get_goal_config()
+            for i in range(self.N-1):
+                p.resetJointState(self.robotId, i, float(config[i]))
+            print("Running simulation with GUI. Close the window to exit.")
+            while p.isConnected():
+                states = p.getJointStates(self.robotId, [0,1,2,3,4])
+                config = []
+                for state in states:
+                    config.append(state[0])
+                
+                print(self.sdf(config))
+                p.stepSimulation()
+        else:
+            print("Running headless simulation. Press Ctrl+C to exit.")
+            try:
+                while True:
+                    config = p.getJointStates([0,1,2,3,4])
+                    print(self.sdf(config))
+                    p.stepSimulation()
+            except KeyboardInterrupt:
+                pass
 
 
 if __name__ == "__main__":
