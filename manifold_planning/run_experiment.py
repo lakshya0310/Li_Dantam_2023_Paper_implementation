@@ -20,7 +20,7 @@ except ImportError:
 
 def build_prm(sim, num_samples, start, goal):
     dof = sim.dof()
-    bounds = [(-1.8326, 1.8326), (-2.7489, 2.7489), (-3, 3), (-0.06, 0.1), (0, 0)]
+    bounds = [(-1.8326, 1.8326), (-2.7489, 2.7489), (-3, 3), (-0.06, 0.1)]
     
     valid_samples = [start, goal]
     
@@ -206,7 +206,7 @@ def run():
     dof = sim.dof()
     print(f"Detected Robot DOF: {dof}")
     
-    planner = infeasibility_proof.InfeasibilityPlanner(dof)
+    planner = infeasibility_proof.InfeasibilityPlanner(dim=dof)
     
     start_q = np.array(sim.get_start_config())
     goal_q = np.array(sim.get_goal_config())
@@ -242,12 +242,13 @@ def run():
     training_labels = []
     
     for idx in comp_start:
-        planner.add_sample(samples[idx][:-1], -1.0)
+        planner.add_sample(np.array(samples[idx], dtype=np.float64), -1.0)
         training_samples.append(samples[idx])
         training_labels.append(-1.0)
+
         
     for idx in comp_goal:
-        planner.add_sample(samples[idx][:-1], 1.0)
+        planner.add_sample(samples[idx], 1.0)
         training_samples.append(samples[idx])
         training_labels.append(1.0)
         
@@ -278,19 +279,21 @@ def run():
     print(f"   [Timer] Seed Search: {time.time()-t0:.4f} s (Gap: {min_dist:.3f})")
     
     print("\n[Step 5] Adaptive Proof Construction...")
-    scale = 0.1 
+    scale = 0.1
     valid_proof = False
     final_facets = []
     
     # We need bounds accessible for the 2D visualization
-    bounds = [(-3.14, 3.14)] * dof 
+    # bounds = [(-3.14, 3.14)] * dof
+    bounds = [(-1.8326, 1.8326), (-2.7489, 2.7489), (-3, 3), (-0.1, -0.04), (0.0, 0.0)] 
     
-    while scale > 0.00:
+    while scale > 0.0:
         facets = planner.construct_proof(seeds, scale)
+
         print(f"   [Info] Generated {len(facets)} facets at scale {scale:.3f}.")
         
         if len(facets) == 0:
-            scale -= 0.1
+            scale *= 0.9
             continue
             
         # FIX 1: Always store the latest facets so we can visualize the failed attempts

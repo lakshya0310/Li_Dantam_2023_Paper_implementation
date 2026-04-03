@@ -204,15 +204,17 @@ class Simulation1:
     
     def get_start_config(self):
         # A configuration in the bottom-left free region
-        return [0.0, 0.0 , 0.0 , 0.0 , 0.0]
+        return [0.0, 0.0 , 0.0 , 0.0]
+        # return [0.0, 0.0, 0.0]
 
     def get_goal_config(self):
         # A configuration in the top-right free region
-        return [1.8, -0.95, 0, -0.05, 0.0]
+        return [1.8, -0.95, 0, -0.05]
+        # return [1.8, -0.95, 0]
 
     # degrees of freedom
     def dof(self) -> int:
-        return int(self.N)
+        return int(self.N) - 1
 
     def inCollision(self, q) -> bool:
         return self.sdf(q) <= 0.0
@@ -223,10 +225,10 @@ class Simulation1:
         returns minimum distance between robot and obstacles.
         """
         # ensure q has correct length
-        if len(q) < self.N:
-            raise ValueError(f"Expected q of length >= {self.N}, got {len(q)}")
+        if len(q) < self.dof():
+            raise ValueError(f"Expected q of length >= {self.dof()}, got {len(q)}")
 
-        for i in range(self.N):
+        for i in range(self.dof()):
             p.resetJointState(self.robotId, i, float(q[i]))
 
         p.stepSimulation()

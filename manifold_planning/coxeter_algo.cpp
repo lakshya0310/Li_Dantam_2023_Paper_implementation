@@ -101,7 +101,7 @@ std::vector<Facet> generate_manifold_triangulation(
     const std::vector<Eigen::VectorXd>& seeds,
     double scale
 ) {
-    CT ct(dimension); 
+    CT ct(dimension);
     
     // Use Level-Synchronous BFS for Parallelization
     std::vector<PR> current_level;
@@ -111,7 +111,6 @@ std::vector<Facet> generate_manifold_triangulation(
     auto f_scaled = [&](const Eigen::VectorXd& y) {
         return f(y * scale);
     };
-
     // 1. Initialization
     for (const auto& s : seeds) {
         Eigen::VectorXd s_lattice = s / scale; 
