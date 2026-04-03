@@ -1,17 +1,20 @@
+import os
+os.environ["OMP_NUM_THREADS"] = "1" 
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
 from scipy.spatial import cKDTree
-from scipy.optimize import minimize
+import nlopt 
 import miniball
 import time
 import collections
 import pybullet as p
 
 # CHANGE THIS to simulation3, simulation4, or simulation5
-import simulation6 as sim_env 
-
+import simulation6 as sim_env
 try:
     import infeasibility_proof
 except ImportError:
@@ -48,51 +51,53 @@ def build_prm(sim, num_samples, start, goal):
                 
     return valid_samples, G, 0, 1
 
-def elastic_update(q, sim, planner, training_samples, training_labels, max_iter=3):
-    """
-    Algorithm 4 from paper: Locally fixes the triangulation by projecting 
-    C_free points onto the manifold using non-linear optimization (SLSQP).
-    """
+def elastic_update(q, sim, planner, training_samples, training_labels, dof, max_iter=3):
     current_q = np.copy(q)
     
+    def objective(x, grad):
+        val = planner.manifold_function(x.tolist())
+        if grad.size > 0:
+            eps = 1e-5
+            for k in range(dof):
+                x_plus = np.copy(x)
+                x_plus[k] += eps
+                val_plus = planner.manifold_function(x_plus.tolist())
+                grad[k] = (abs(val_plus) - abs(val)) / eps
+        return abs(val)
+    
     for _ in range(max_iter):
-        # 1. Project to the manifold (min |F(q)|)
-        res = minimize(
-            lambda x: abs(planner.manifold_function(x)), 
-            x0=current_q, 
-            method='SLSQP'
-        )
-        q_proj = res.x
+        opt = nlopt.opt(nlopt.LD_SLSQP, dof)
+        opt.set_min_objective(objective)
+        opt.set_ftol_abs(1e-5)
+        opt.set_maxeval(100)
         
-        # 2. If the projection is in Obstacle space, the elastic update succeeded!
+        try:
+            q_proj = opt.optimize(current_q)
+        except (nlopt.RoundoffLimited, ValueError):
+            q_proj = current_q 
+        
         if sim.inCollision(q_proj):
             return q_proj, True
             
-        # 3. If still in Free space, add to samples, retrain, and loop
-        # Find label of nearest neighbor to maintain classification bounds
         dists = np.linalg.norm(np.array(training_samples) - q_proj, axis=1)
         closest_idx = np.argmin(dists)
         label = training_labels[closest_idx]
         
         training_samples.append(q_proj)
         training_labels.append(label)
-        planner.add_sample(q_proj, label)
-        planner.train_manifold() # Retrain SVM
+        
+        planner.add_sample(q_proj.tolist(), label)
+        planner.train_manifold() 
         
         current_q = q_proj
         
     return current_q, False
 
-def check_proof_in_python(facets, sim, planner, training_samples, training_labels, epsilon=0.1):
-    """
-    Section V-C: Facet Bisection and Checking utilizing the Miniball algorithm
-    and integrating the local Elastic Update.
-    """
+def check_proof_in_python(facets, sim, planner, training_samples, training_labels, dof, epsilon=0.1):
     queue = collections.deque(facets)
     collision_cache = {}
     
     def check_and_update(pt):
-        # Round to create stable hash key for caching
         key = tuple(np.round(pt, 4))
         if key in collision_cache:
             return pt, collision_cache[key]
@@ -101,8 +106,7 @@ def check_proof_in_python(facets, sim, planner, training_samples, training_label
             collision_cache[key] = True
             return pt, True
         else:
-            # ELASTIC UPDATE TRIGGERED
-            new_pt, success = elastic_update(pt, sim, planner, training_samples, training_labels)
+            new_pt, success = elastic_update(pt, sim, planner, training_samples, training_labels, dof)
             if success:
                 new_key = tuple(np.round(new_pt, 4))
                 collision_cache[new_key] = True
@@ -118,23 +122,19 @@ def check_proof_in_python(facets, sim, planner, training_samples, training_label
         facet = queue.popleft()
         pts = np.array(facet)
         
-        # --- MINIBALL ALGORITHM CHECK ---
         center, squared_radius = miniball.get_bounding_ball(pts)
         radius = np.sqrt(squared_radius)
         
-        # Base Case: Enclosed in hyper-ball of radius < epsilon
         if radius < epsilon:
-            valid_facet = True
             for i in range(len(pts)):
                 updated_pt, in_obs = check_and_update(pts[i])
                 if not in_obs:
-                    return False # Elastic update failed, need smaller global scale
+                    return False 
                 if not np.array_equal(pts[i], updated_pt):
                     pts[i] = updated_pt
                     elastic_fixes += 1
             continue
             
-        # Recursive Step: Bisect longest edge
         max_edge = 0
         u, v = 0, 0
         n_pts = len(pts)
@@ -147,7 +147,6 @@ def check_proof_in_python(facets, sim, planner, training_samples, training_label
                     
         mid = (pts[u] + pts[v]) / 2.0
         
-        # Check midpoint with Elastic Update logic
         updated_mid, in_obs = check_and_update(mid)
         if not in_obs:
             return False
@@ -242,12 +241,12 @@ def run():
     training_labels = []
     
     for idx in comp_start:
-        planner.add_sample(samples[idx][:-1], -1.0)
+        planner.add_sample(samples[idx].tolist(), -1.0)
         training_samples.append(samples[idx])
         training_labels.append(-1.0)
         
     for idx in comp_goal:
-        planner.add_sample(samples[idx][:-1], 1.0)
+        planner.add_sample(samples[idx].tolist(), 1.0)
         training_samples.append(samples[idx])
         training_labels.append(1.0)
         
@@ -260,7 +259,7 @@ def run():
     t0 = time.time()
     seeds = []
     min_dist = float('inf')
-    best_seed = None
+    best_initial_guess = None
     
     s_indices = list(comp_start)
     g_indices = list(comp_goal)
@@ -271,43 +270,68 @@ def run():
         dist = np.linalg.norm(samples[i] - samples[j])
         if dist < min_dist:
             min_dist = dist
-            best_seed = (samples[i] + samples[j]) / 2.0
+            best_initial_guess = (samples[i] + samples[j]) / 2.0
             
-    if best_seed is not None:
-        seeds.append(best_seed)
-    print(f"   [Timer] Seed Search: {time.time()-t0:.4f} s (Gap: {min_dist:.3f})")
-    
+    if best_initial_guess is not None:
+        def seed_objective(x, grad):
+            val = planner.manifold_function(x.tolist())
+            if grad.size > 0:
+                eps = 1e-5
+                for k in range(dof):
+                    x_plus = np.copy(x)
+                    x_plus[k] += eps
+                    val_plus = planner.manifold_function(x_plus.tolist())
+                    grad[k] = (abs(val_plus) - abs(val)) / eps
+            return abs(val)
+            
+        print(f"   [Opt] Running NLopt (LD_SLSQP) from gap midpoint...")
+        opt = nlopt.opt(nlopt.LD_SLSQP, dof)
+        opt.set_min_objective(seed_objective)
+        opt.set_ftol_abs(1e-5)
+        opt.set_maxeval(100)
+        
+        try:
+            optimized_seed = opt.optimize(best_initial_guess)
+        except (nlopt.RoundoffLimited, ValueError):
+            optimized_seed = best_initial_guess
+            
+        manifold_val = planner.manifold_function(optimized_seed.tolist())
+        seeds.append(optimized_seed)
+        
+        print(f"   [Timer] Seed Search & Opt: {time.time()-t0:.4f} s")
+        print(f"   [Info] Optimized Seed F(q) value: {manifold_val:.6f} (Target: ~0.0)")
+
+
     print("\n[Step 5] Adaptive Proof Construction...")
-    scale = 0.1 
+    scale = 0.7 
     valid_proof = False
     final_facets = []
     
     # We need bounds accessible for the 2D visualization
     bounds = [(-3.14, 3.14)] * dof 
     
-    while scale > 0.00:
-        facets = planner.construct_proof(seeds, scale)
+    while scale > 0.05:
+        safe_seeds = [s.tolist() for s in seeds] # SAFELY CONVERT TO LISTS
+        facets = planner.construct_proof(safe_seeds, scale)
         print(f"   [Info] Generated {len(facets)} facets at scale {scale:.3f}.")
         
         if len(facets) == 0:
-            scale -= 0.1
+            scale *= 0.8
             continue
             
-        # FIX 1: Always store the latest facets so we can visualize the failed attempts
         final_facets = facets 
-            
         t_check = time.time()
         
-        # Check proof using Miniball and Elastic updates
         if dof <= 3:
             epsilon = 0.1
         elif dof == 4:
-            epsilon = 0.3  # Stops deep bisection in 4D
+            epsilon = 0.3 
         else:
             epsilon = 0.5
+
         is_valid = check_proof_in_python(
             facets, sim, planner, 
-            training_samples, training_labels, 
+            training_samples, training_labels, dof,
             epsilon=epsilon
         )
         
@@ -319,7 +343,7 @@ def run():
         else:
             print(f"   [Timer] Verification: {time.time()-t_check:.4f} s (Failed)")
             print(f"   Elastic Updates failed at scale {scale:.3f}. Reducing global scale...")
-            scale *= 0.9
+            scale *= 0.8
 
     print("\n[Step 6] Visualizing Results...")
     if dof == 2:
@@ -357,7 +381,7 @@ def visualize_2d(samples, comp_start, comp_goal, facets, is_valid, planner, boun
     for i in range(X.shape[0]):
         for j in range(X.shape[1]):
             q = np.array([X[i,j], Y[i,j]])
-            Z[i,j] = planner.manifold_function(q)
+            Z[i,j] = planner.manifold_function(q.tolist())
             
     ax.contour(X, Y, Z, levels=[0], colors='purple', linestyles='dashed', linewidths=2, label='SVM Boundary')
 
