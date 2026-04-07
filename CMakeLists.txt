@@ -7,16 +7,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(GUDHI REQUIRED)
+find_package(ompl REQUIRED)
 
 include_directories(include)
 
 add_executable(trace
     main.cpp
     src/man_trace.cpp
+    src/prm_sampler.cpp
 )
 
 target_include_directories(trace PRIVATE
     ${EIGEN3_INCLUDE_DIR}
+    ${OMPL_INCLUDE_DIRS}
     /usr/include/gudhi
     ../libcuckoo
 )
@@ -24,4 +27,5 @@ target_include_directories(trace PRIVATE
 target_link_libraries(trace PRIVATE
     OpenMP::OpenMP_CXX
     Eigen3::Eigen
+    ${OMPL_LIBRARIES}
 )
