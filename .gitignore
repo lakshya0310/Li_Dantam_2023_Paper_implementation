@@ -6,12 +6,10 @@ manifold_planning/new/
 infeasibility_proof.cpython-310-x86_64-linux-gnu.so
 CMakeLists1.txt
 CMakeLists2.txt
-<<<<<<< Updated upstream
 manifold_planning/cmake_install.cmake
 manifold_planning/CMakeCache.txt
 manifold_planning/infeasibility_proof.cpython-312-x86_64-linux-gnu.so
 manifold_planning/Makefile
 manifold_planning/CMakeFiles
-=======
 manifold_planning/Seed_projection/build
->>>>>>> Stashed changes
+manifold_planning/Collision_Checker/buildS
