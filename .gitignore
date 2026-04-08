@@ -12,4 +12,4 @@ manifold_planning/infeasibility_proof.cpython-312-x86_64-linux-gnu.so
 manifold_planning/Makefile
 manifold_planning/CMakeFiles
 manifold_planning/Seed_projection/build
-manifold_planning/Collision_Checker/buildS
+manifold_planning/Collision_Checker/build
