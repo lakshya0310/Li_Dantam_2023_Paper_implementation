@@ -1,5 +1,15 @@
 #include "prm_sampler.h"
 
+/*
+
+Generate samples with labels for goal connected
+and not connected using a PRM Graph
+with the help of OMPL
+
+Aayush Rath, Lakshya Jindal
+
+*/
+
 std::vector<int> PRMGraph::getMilestoneLabels() {
     // Number of vertices
     size_t n = boost::num_vertices(this->g_);
@@ -27,8 +37,8 @@ Vertex PRMGraph::findClosestVertex(const Eigen::VectorXd& q) {
 
     Vertex closest = *vertices(this->g_).first;
     double minDist = std::numeric_limits<double>::infinity();
-
     for (auto v : boost::make_iterator_range(vertices(this->g_))) {
+
         const ob::State* s = stateMap[v];
         const auto* rs = s->as<ob::RealVectorStateSpace::StateType>();
 
