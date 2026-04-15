@@ -62,18 +62,25 @@ void manifold_tracing(
 
     for (const auto& s : seeds) {
         Eigen::VectorXd sd_lattice = s;
+
+        // Locate the maximal simplex that encapsulates the seed point
         auto simplex = ct.locate_point(sd_lattice);
+
+        // Break the simplex into the 1d edges that make it up
         for (auto& edge : simplex.face_range(1)) {
+
+            // Check if the edge is already visited
             if (!visited.contains(edge)) {
                 frontier.push_back(edge);
                 Eigen::VectorXd p1, p2;
                 int cnt = 0;
+
+                // Convert the points to the global reference frame to calculate the point of intersection
                 for (auto v : edge.vertex_range()) {
                     if (cnt == 0) p1 = ct.cartesian_coordinates(v);
                     else if (cnt == 1) p2 = ct.cartesian_coordinates(v);
                     cnt++;
                 }
-
                 Eigen::VectorXd ip = intersection_point(p1, p2, f);
             }
         }
@@ -97,22 +104,29 @@ void manifold_tracing(
 
                     Eigen::VectorXd p1, p2;
                     int cnt = 0;
+                    
+                    // Convert the points to the global reference frame to calculate the point of intersection
                     for (auto v : edge.vertex_range()) {
                         if (cnt == 0) p1 = ct.cartesian_coordinates(v);
                         else if (cnt == 1) p2 = ct.cartesian_coordinates(v);
                         cnt++;
                     }
 
+                    // Add the new edge only if it intersects with the implicit manifold
                     if (!intersect_check(p1, p2, f)) continue;
                     visited.insert(new_edge, intersection_point(p1, p2, f));
                     local_next[tid].push_back(new_edge);
                 }
             }
         }
+
+        // Clear the current frotier and move the next frontier
         frontier.clear();
         for (auto& v : local_next)
         frontier.insert(frontier.end(), v.begin(), v.end());
     }
+
+   // The visited set holds all the intersecting edges which will be used to extract the simplicial complex
 }
 
 void manifold_meshing(
@@ -121,6 +135,7 @@ void manifold_meshing(
     libcuckoo::cuckoohash_map<PermRep, Eigen::VectorXd, PermRepHash>& visited,
     libcuckoo::cuckoohash_map<PermRep, std::vector<Eigen::VectorXd>, PermRepHash>& mesh
 ) {
+    // Need to treat the hash map sequentially for simplicial complex extraction
     auto locked_visited = visited.lock_table();
 
     for (const auto& kv : locked_visited) {
@@ -132,13 +147,14 @@ void manifold_meshing(
                 tet,
                 [&](std::vector<Eigen::VectorXd>& vec) {
                     for (const auto& p : vec) {
-                        if ((p - ip).norm() < 1e-6)
+                        // To avoid repeated points as they create overlapping elements
+                        if ((p - ip).norm() < 1e-4)
                             return;
                     }
                     vec.push_back(ip);
                 },
                 std::vector<Eigen::VectorXd>{ip}
             );
-        }
+           }
     }
 }
