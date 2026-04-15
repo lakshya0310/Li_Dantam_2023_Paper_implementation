@@ -4,6 +4,18 @@
 void Manifold::train_samples(const std::vector<Eigen::VectorXd>& samples, std::vector<float>& labels) {
         if (samples.empty()) return;
 
+    for (const auto& s : samples) {
+        if (s.size() != samples[0].size()) {
+            std::cerr << "[ERROR] Inconsistent dimensions\n";
+            return;
+        }
+    }
+
+    if (dim_ != samples[0].size()) {
+        std::cerr << "[ERROR] dim_ mismatch: "
+                << dim_ << " vs " << samples[0].size() << std::endl;
+    }
+
         std::cout << "   [CPP] Preparing data for " << samples.size() << " samples..." << std::endl;
         std::vector<float> data;
         data.reserve(samples.size() * dim_);
@@ -15,8 +27,7 @@ void Manifold::train_samples(const std::vector<Eigen::VectorXd>& samples, std::v
         param.svm_type = SvmParam::C_SVC;
         param.kernel_type = SvmParam::RBF;
         param.gamma = 0.5; 
-        param.C = 10;      
-        param.probability = 1; 
+        param.C = 10;
         
         DataSet dataset;
         dataset.load_from_dense(samples.size(), dim_, data.data(), labels.data());

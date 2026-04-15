@@ -33,7 +33,7 @@ std::vector<int> PRMGraph::getMilestoneLabels() {
 }
 
 Vertex PRMGraph::findClosestVertex(const Eigen::VectorXd& q) {
-    auto stateMap = boost::get(vertex_state_t(), this->g_);
+    auto stateMap = boost::get(og::PRM::vertex_state_t(), this->g_);
 
     Vertex closest = *vertices(this->g_).first;
     double minDist = std::numeric_limits<double>::infinity();

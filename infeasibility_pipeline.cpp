@@ -27,10 +27,6 @@ extern "C" {
 
 #include <nlopt.hpp>
 
-#include <ompl/base/SpaceInformation.h>
-#include <ompl/base/spaces/RealVectorStateSpace.h>
-#include <ompl/geometric/planners/prm/PRM.h>
-
 #include <Eigen/Dense>
 #include <iostream>
 #include <fstream>
@@ -40,15 +36,7 @@ extern "C" {
 #include <cassert>
 #include <cmath>
 
-namespace ob = ompl::base;
-namespace og = ompl::geometric;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Global Kinematics pointer
-//
-// StateValidator::isValid (declared in prm_sampler.h) is defined here so it
-// can reach the Kinematics object.  Set once before building the PRM.
-// ─────────────────────────────────────────────────────────────────────────────
 static Kinematics* g_kin = nullptr;
 
 bool StateValidator::isValid(const ob::State* state) const {
@@ -60,16 +48,9 @@ bool StateValidator::isValid(const ob::State* state) const {
     return !g_kin->is_real_collision(q);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stage 1 — PRM sampling
-//
-// Grows a PRM roadmap and classifies each milestone as goal-connected (+1)
-// or not (-1).  A separate rejection-sampling pass collects C-obs points.
-// ─────────────────────────────────────────────────────────────────────────────
-
 struct SamplingResult {
     std::vector<Eigen::VectorXd> cfree_samples;  // PRM milestones (C-free)
-    std::vector<int>             labels;          // +1 goal-conn / -1 otherwise
+    std::vector<float>             labels;          // +1 goal-conn / -1 otherwise
     std::vector<Eigen::VectorXd> cobs_samples;   // in-collision points
 };
 
@@ -102,8 +83,50 @@ SamplingResult build_prm_samples(
 
     // ── Build PRM ─────────────────────────────────────────────────────────────
     PRMGraph prm(si, q_start, q_goal);
-    prm.growRoadmap(n_milestones);
-    prm.expandRoadmap(n_milestones / 5);  // extra connectivity pass
+
+    // Set problem definition for PRM setup
+    auto start_state = si->allocState();
+    auto goal_state = si->allocState();
+    auto* start_rs = start_state->as<ob::RealVectorStateSpace::StateType>();
+    auto* goal_rs = goal_state->as<ob::RealVectorStateSpace::StateType>();
+    for (int i = 0; i < ndof; ++i) {
+        start_rs->values[i] = q_start[i];
+        goal_rs->values[i] = q_goal[i];
+    }
+    auto pdef = std::make_shared<ob::ProblemDefinition>(si);
+    pdef->setStartAndGoalStates(start_state, goal_state);
+    prm.setProblemDefinition(pdef);
+    prm.setup();
+
+    auto start = std::chrono::steady_clock::now();
+
+    int max_nodes = 2000;
+    double max_time = 5.0;
+
+    ob::PlannerTerminationCondition ptc(
+        [&]() {
+            double elapsed =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - start
+                ).count();
+
+            return elapsed > max_time ||
+                boost::num_vertices(prm.getGraph()) >= max_nodes;
+        }
+    );
+
+    std::cout << "[PRM] Growing roadmap with up to " << n_milestones
+              << " milestones or " << max_time << " seconds...\n";
+
+    prm.growRoadmap(ptc);
+
+    std::cout << "[PRM] Initial roadmap growth complete. Milestones: "
+              << boost::num_vertices(prm.getGraph()) << "\n";
+
+    // prm.expandRoadmap(n_milestones / 5);  // extra connectivity pass
+
+    std::cout << "[PRM] Roadmap growth complete. Milestones: "
+              << boost::num_vertices(prm.getGraph()) << "\n";
 
     const auto& G = prm.getGraph();
 
@@ -140,51 +163,16 @@ SamplingResult build_prm_samples(
         }
     }
 
+    si->freeState(start_state);
+    si->freeState(goal_state);
+
     return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stage 2 — SVM training
-//
-// Concatenates C-free milestones (±1) with C-obs samples (always -1) and
-// trains a ThunderSVM RBF classifier via the Manifold wrapper.
-// ─────────────────────────────────────────────────────────────────────────────
-
-void train_svm(Manifold& manifold, const SamplingResult& sr) {
-    std::vector<Eigen::VectorXd> all_samples = sr.cfree_samples;
-    all_samples.insert(all_samples.end(),
-                       sr.cobs_samples.begin(), sr.cobs_samples.end());
-
-    std::vector<float> all_labels;
-    all_labels.reserve(all_samples.size());
-    for (int  l : sr.labels)              all_labels.push_back((float)l);
-    for (size_t i = 0; i < sr.cobs_samples.size(); ++i)
-                                          all_labels.push_back(-1.0f);
-
-    std::cout << "[SVM] Training on " << all_samples.size() << " samples ("
-              << sr.cfree_samples.size() << " C-free + "
-              << sr.cobs_samples.size()  << " C-obs)...\n";
-
-    manifold.train_samples(all_samples, all_labels);
-    std::cout << "[SVM] Training complete.\n";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stage 3 — Projection onto the SVM manifold via NLOPT SLSQP
-//
-// For each seed q0 we solve:
-//     minimise   ½ ‖q − q0‖²
-//     subject to f(q) = 0          (SVM zero-level-set)
-//                lo ≤ q ≤ hi       (joint limits)
-//
-// The constraint gradient is computed by central finite differences because
-// ThunderSVM does not expose an analytic decision-function gradient.
-// ─────────────────────────────────────────────────────────────────────────────
-
 struct ProjectionData {
-    const Eigen::VectorXd&                               q0;
+    const Eigen::VectorXd& q0;
     const std::function<double(const Eigen::VectorXd&)>& f;
-    int                                                  ndof;
+    int ndof;
 };
 
 static double proj_objective(
@@ -227,11 +215,11 @@ Eigen::VectorXd project_to_manifold(
     const std::function<double(const Eigen::VectorXd&)>& f,
     const std::vector<double>&                           bounds_lo,
     const std::vector<double>&                           bounds_hi,
-    double tol      = 1e-7,
-    int    max_eval = 2000
+    double tol      = 1e-4,
+    int    max_eval = 200
 ) {
     int ndof = (int)q0.size();
-    if (std::abs(f(q0)) < tol) return q0;  // already on manifold
+    if (std::abs(f(q0)) < tol) return q0;
 
     ProjectionData pd{q0, f, ndof};
 
@@ -255,7 +243,6 @@ Eigen::VectorXd project_to_manifold(
     return Eigen::Map<Eigen::VectorXd>(x.data(), ndof);
 }
 
-// Projects every C-free and C-obs sample in parallel (OpenMP).
 std::vector<Eigen::VectorXd> project_all_samples(
     const SamplingResult&                                sr,
     const std::function<double(const Eigen::VectorXd&)>& f,
@@ -264,28 +251,26 @@ std::vector<Eigen::VectorXd> project_all_samples(
 ) {
     std::vector<Eigen::VectorXd> all_samples = sr.cfree_samples;
     all_samples.insert(all_samples.end(),
-                       sr.cobs_samples.begin(), sr.cobs_samples.end());
+                       sr.cobs_samples.begin(),
+                       sr.cobs_samples.end());
+
+    const int max_points = 2;
+
+    if ((int)all_samples.size() > max_points) {
+        all_samples.resize(max_points);
+    }
 
     std::vector<Eigen::VectorXd> projected(all_samples.size());
 
     std::cout << "[Project] Projecting " << all_samples.size()
               << " samples onto SVM manifold...\n";
 
-    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < (int)all_samples.size(); ++i)
         projected[i] = project_to_manifold(all_samples[i], f, bounds_lo, bounds_hi);
 
     std::cout << "[Project] Done.\n";
     return projected;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stage 4 — Manifold tracing
-//
-// Hands the projected seeds to manifold_tracing() (BFS over Coxeter edges)
-// and then manifold_meshing() to extract the simplicial complex.
-// The lattice is centred at the seed centroid; cell_size controls resolution.
-// ─────────────────────────────────────────────────────────────────────────────
 
 using MeshMap = libcuckoo::cuckoohash_map<
     PermRep,
@@ -329,19 +314,11 @@ MeshMap trace_svm_manifold(
     return mesh;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// main
-// ─────────────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
-
-    // ── Load scene graph ──────────────────────────────────────────────────────
-    // aa_rx_dl_sg__scenegraph is the function generated by aarxc and compiled
-    // into out.c.  It populates an existing aa_rx_sg with the robot geometry.
     struct aa_rx_sg* sg = aa_rx_sg_create();
     sg = aa_rx_dl_sg__scenegraph(sg, "");
 
-    // Load environment obstacles from JSON (optional; pass path as argv[1])
     const std::string scene_file = (argc > 1) ? argv[1] : "../scenes/scene8.json";
     try {
         add_obstacles(sg, scene_file);
@@ -349,32 +326,25 @@ int main(int argc, char* argv[]) {
         std::cerr << "[Warn] Could not load obstacles: " << e.what() << "\n";
     }
 
-    // Finalise scene graph and initialise collision context
     aa_rx_sg_init(sg);
     aa_rx_sg_cl_init(sg);
 
-    Kinematics kin(sg);   // Kinematics takes ownership; sg destroyed in destructor
+    Kinematics kin(sg);
     int ndof = (int)kin.ndof();
     std::cout << "[Main] Robot loaded with " << ndof << " DOF.\n";
 
-    // ── C-space bounds (±π per revolute joint — adjust per robot) ─────────────
     std::vector<double> lo(ndof, -M_PI);
     std::vector<double> hi(ndof,  M_PI);
 
-    // ── Start / goal ──────────────────────────────────────────────────────────
-    // TODO: replace with meaningful configurations for your problem
     Eigen::VectorXd q_start = Eigen::VectorXd::Zero(ndof);
     Eigen::VectorXd q_goal  = Eigen::VectorXd::Zero(ndof);
     q_goal[0] = 1.0;
 
-    // =========================================================================
-    // Stage 1: Build PRM and collect labelled samples
-    // =========================================================================
     std::cout << "\n[Stage 1] Building PRM roadmap...\n";
     SamplingResult sr = build_prm_samples(
         kin, lo, hi, q_start, q_goal,
-        /*n_milestones=*/ 2000,
-        /*n_cobs=*/        500
+        2000,
+        500
     );
 
     int n_goal = 0;
@@ -384,24 +354,17 @@ int main(int argc, char* argv[]) {
               << ",  blocked: "        << (sr.cfree_samples.size() - n_goal) << ")\n"
               << "[Stage 1] C-obs samples     : " << sr.cobs_samples.size() << "\n";
 
-    // =========================================================================
-    // Stage 2: Train SVM
-    // =========================================================================
+    
     std::cout << "\n[Stage 2] Training SVM...\n";
     Manifold manifold(ndof);
-    train_svm(manifold, sr);
+    manifold.train_samples(sr.cfree_samples, sr.labels);
 
-    // Wrap as std::function for stages 3 and 4
     std::function<double(const Eigen::VectorXd&)> f =
         [&manifold](const Eigen::VectorXd& q) { return manifold(q); };
 
-    // =========================================================================
-    // Stage 3: Project all samples onto SVM manifold (f = 0)
-    // =========================================================================
     std::cout << "\n[Stage 3] Projecting onto SVM manifold...\n";
     std::vector<Eigen::VectorXd> projected = project_all_samples(sr, f, lo, hi);
 
-    // Filter out seeds that did not converge close enough to f = 0
     std::vector<Eigen::VectorXd> seeds;
     seeds.reserve(projected.size());
     const double seed_tol = 1e-4;
@@ -416,13 +379,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // =========================================================================
-    // Stage 4: Manifold tracing
-    // =========================================================================
     std::cout << "\n[Stage 4] Tracing SVM manifold...\n";
     MeshMap mesh = trace_svm_manifold(f, seeds, ndof, /*cell_size=*/0.05);
 
-    // ── Write mesh points to CSV ──────────────────────────────────────────────
     {
         const std::string out_file = "manifold_mesh.csv";
         std::ofstream out(out_file);
