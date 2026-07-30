@@ -38,7 +38,7 @@ Eigen::VectorXd intersection_point (
 
     // Iterative false position for computing the exact position
     for (int i = 0; i < max_iter; i++) {
-        double fp;
+        double fp = f(p);
         if (std::abs(fp) <= eps) return p;
         if (fp * f1 > 0.0) {p1 = p; f1 = fp;}
         else {p2 = p; f2 = fp;}
@@ -50,7 +50,6 @@ Eigen::VectorXd intersection_point (
     return p;
 }
 
-// BFS traversal for finding intersecting edges and intersection points
 void manifold_tracing(
     int dim,
     const std::function<double(const Eigen::VectorXd&)>& f,
@@ -59,74 +58,112 @@ void manifold_tracing(
     const CoxTri ct
 ) {
     std::vector<PermRep> frontier;
+    frontier.reserve(1024);
 
-    for (const auto& s : seeds) {
-        Eigen::VectorXd sd_lattice = s;
+    const double eps = 1e-8;
+    #pragma omp parallel
+    {
+        std::vector<decltype(frontier)::value_type> local_frontier;
 
-        // Locate the maximal simplex that encapsulates the seed point
-        auto simplex = ct.locate_point(sd_lattice);
+        #pragma omp for nowait
+        for (size_t i = 0; i < seeds.size(); ++i) {
+            const auto& s = seeds[i];
 
-        // Break the simplex into the 1d edges that make it up
-        for (auto& edge : simplex.face_range(1)) {
+            auto simplex = ct.locate_point(s);
 
-            // Check if the edge is already visited
-            if (!visited.contains(edge)) {
-                frontier.push_back(edge);
-                Eigen::VectorXd p1, p2;
+            for (const auto& edge : simplex.face_range(1)) {
+
+                Eigen::VectorXd p1(dim), p2(dim);
                 int cnt = 0;
 
-                // Convert the points to the global reference frame to calculate the point of intersection
                 for (auto v : edge.vertex_range()) {
                     if (cnt == 0) p1 = ct.cartesian_coordinates(v);
-                    else if (cnt == 1) p2 = ct.cartesian_coordinates(v);
+                    else p2 = ct.cartesian_coordinates(v);
                     cnt++;
                 }
+
+                double f1 = f(p1);
+                double f2 = f(p2);
+
+                if (!((f1 > eps && f2 < -eps) || (f1 < -eps && f2 > eps)))
+                    continue;
+
                 Eigen::VectorXd ip = intersection_point(p1, p2, f);
-            }
-        }
-    }
 
-    // Frontier expansion loop
-    while (!frontier.empty()) {
-        // Storing a local version (each row) of the next frontier to avoid race conditions
-        std::vector<std::vector<PermRep>> local_next(omp_get_max_threads());
-        #pragma omp parallel for
-        for (int i = 0; i < frontier.size(); i++) {
-            int tid = omp_get_thread_num();
-            auto edge = frontier[i];
-
-            // Expanding to the 2d cofaces
-            for (const auto& face : edge.coface_range(2)) {
-
-                // 1d edges that make the current 2d simplex
-                for (const auto& new_edge : face.face_range(1)) {
-                    if (visited.contains(new_edge)) continue;
-
-                    Eigen::VectorXd p1, p2;
-                    int cnt = 0;
-                    
-                    // Convert the points to the global reference frame to calculate the point of intersection
-                    for (auto v : edge.vertex_range()) {
-                        if (cnt == 0) p1 = ct.cartesian_coordinates(v);
-                        else if (cnt == 1) p2 = ct.cartesian_coordinates(v);
-                        cnt++;
-                    }
-
-                    // Add the new edge only if it intersects with the implicit manifold
-                    if (!intersect_check(p1, p2, f)) continue;
-                    visited.insert(new_edge, intersection_point(p1, p2, f));
-                    local_next[tid].push_back(new_edge);
+                if (visited.insert(edge, ip)) {
+                    local_frontier.push_back(edge);
                 }
             }
         }
 
-        // Clear the current frotier and move the next frontier
-        frontier.clear();
-        for (auto& v : local_next)
-        frontier.insert(frontier.end(), v.begin(), v.end());
+        // Merge once per thread
+        #pragma omp critical
+        {
+            frontier.insert(frontier.end(),
+                            local_frontier.begin(),
+                            local_frontier.end());
+        }
     }
 
-   // The visited set holds all the intersecting edges which will be used to extract the simplicial complex
+    int iter = 0;
+    const int MAX_ITERS = 1e6;
+
+    while (!frontier.empty() && iter++ < MAX_ITERS) {
+
+        std::vector<PermRep> next_frontier;
+        next_frontier.reserve(frontier.size() * 2);
+
+        #pragma omp parallel
+        {
+            std::vector<PermRep> local_next;
+            local_next.reserve(512);
+
+            Eigen::VectorXd p1(dim), p2(dim);
+
+            #pragma omp for schedule(dynamic)
+            for (int i = 0; i < (int)frontier.size(); i++) {
+
+                const auto& edge = frontier[i];
+
+                for (const auto& face : edge.coface_range(2)) {
+
+                    for (const auto& new_edge : face.face_range(1)) {
+
+                        if (visited.contains(new_edge)) continue;
+
+                        int cnt = 0;
+                        for (auto v : new_edge.vertex_range()) {
+                            if (cnt == 0) p1 = ct.cartesian_coordinates(v);
+                            else p2 = ct.cartesian_coordinates(v);
+                            cnt++;
+                        }
+
+                        double f1 = f(p1);
+                        double f2 = f(p2);
+
+                        if (!((f1 > eps && f2 < -eps) || (f1 < -eps && f2 > eps)))
+                            continue;
+
+                        Eigen::VectorXd ip = intersection_point(p1, p2, f);
+
+                        if (visited.insert(new_edge, ip)) {
+                            local_next.push_back(new_edge);
+                        }
+                    }
+                }
+            }
+
+            // Merge thread-local results
+            #pragma omp critical
+            next_frontier.insert(next_frontier.end(),
+                                 local_next.begin(),
+                                 local_next.end());
+        }
+
+        std::cout << "Frontier Size: " << frontier.size() << std::endl;
+
+        frontier.swap(next_frontier);
+    }
 }
 
 void manifold_meshing(

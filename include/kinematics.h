@@ -38,6 +38,18 @@ public:
 
             std::vector<double> q0(ndof_, 0.0);
             compute_fk(q0);
+
+            q_lower_.resize(ndof_);
+            q_upper_.resize(ndof_);
+
+            for (size_t i = 0; i < ndof_; ++i) {
+                aa_rx_config_id cid = (aa_rx_config_id)i;
+
+                aa_rx_sg_get_limit_pos(sg_,
+                                    cid,
+                                    &q_lower_[i],
+                                    &q_upper_[i]);
+            }
     }
 
     Kinematics(const Kinematics&) = delete;
@@ -89,6 +101,18 @@ public:
         return hit != 0;
     }
 
+    bool in_joint_limits(const std::vector<double>& q) const
+    {
+        assert(q.size() == ndof_);
+
+        for (size_t i = 0; i < ndof_; ++i) {
+            if (q[i] < q_lower_[i] || q[i] > q_upper_[i])
+                return false;
+        }
+
+        return true;
+    }
+
     std::vector<bool> in_collision_batch(
         const std::vector<std::vector<double>>& configs
     ) {
@@ -130,10 +154,10 @@ public:
             
             // Return true only if one is an obstacle and one is NOT
             // (This ignores obs vs obs)
-            if (a_is_obs != b_is_obs) return true; 
+            if (a_is_obs != b_is_obs) return true;
             
             // You might still want robot vs robot (a_is_obs == false && b_is_obs == false)
-            if (!a_is_obs && !b_is_obs) return true;
+            // if (!a_is_obs && !b_is_obs) return true;
         }
         return false;
     }
@@ -147,6 +171,9 @@ private:
     size_t nframes_, ndof_;
     struct aa_rx_sg* sg_ = nullptr;
     struct aa_rx_cl* cl_ = nullptr;
+
+    std::vector<double> q_lower_;
+    std::vector<double> q_upper_;
 
     std::vector<double> tf_rel_;
     std::vector<double> tf_abs_;

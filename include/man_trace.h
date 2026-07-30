@@ -32,13 +32,28 @@ struct PermRepHash {
     }
 };
 
+// Original single-point overload — used by callers that only have std::function
 void manifold_tracing(
     int dim,
     const std::function<double(const Eigen::VectorXd&)>& f,
     const std::vector<Eigen::VectorXd>& seeds,
-    libcuckoo::cuckoohash_map<PermRep, Eigen::VectorXd, PermRepHash>& visited, 
+    libcuckoo::cuckoohash_map<PermRep, Eigen::VectorXd, PermRepHash>& visited,
     const CoxTri ct
 );
+
+// Batched overload — takes Manifold directly so the BFS can evaluate all
+// edge endpoints for an entire frontier iteration in one batch_predict call,
+// avoiding the per-call ThunderSVM dataset-initialisation overhead.
+// Include svm.h before this header when using this overload.
+#ifdef SVM_H_INCLUDED
+void manifold_tracing_batched(
+    int dim,
+    const Manifold& manifold,
+    const std::vector<Eigen::VectorXd>& seeds,
+    libcuckoo::cuckoohash_map<PermRep, Eigen::VectorXd, PermRepHash>& visited,
+    const CoxTri ct
+);
+#endif
 void manifold_meshing(
     int dim,
     CoxTri& ct,

@@ -23,6 +23,8 @@ endif()
 include_directories(include ../include)
 link_directories(/usr/local/lib)
 
+add_definitions(-DELPP_DISABLE_LOGS)
+
 add_executable(infeasibility_pipeline
     infeasibility_pipeline.cpp
     src/man_trace.cpp
